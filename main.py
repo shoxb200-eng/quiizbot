@@ -1,39 +1,31 @@
-import asyncio
+import telebot
 import json
-
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import CommandStart
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
 TOKEN = "8325777653:AAF01nUdarHlwh33UWMjFtVEBKZdRrqV1Ok"
 
-bot = Bot(token=TOKEN)
-dp = Dispatcher()
+bot = telebot.TeleBot(TOKEN)
 
 with open("questions.json", "r", encoding="utf-8") as f:
     quizzes = json.load(f)
 
 user_data = {}
 
-@dp.message(CommandStart())
-async def start(message: types.Message):
-    buttons = []
+@bot.message_handler(commands=['start'])
+def start(message):
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 
     for quiz_name in quizzes.keys():
-        buttons.append([KeyboardButton(text=quiz_name)])
+        keyboard.add(KeyboardButton(quiz_name))
 
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=buttons,
-        resize_keyboard=True
-    )
-
-    await message.answer(
+    bot.send_message(
+        message.chat.id,
         "Quiz tanlang:",
         reply_markup=keyboard
     )
 
-@dp.message()
-async def handle_message(message: types.Message):
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
     user_id = message.from_user.id
     text = message.text
 
@@ -44,13 +36,14 @@ async def handle_message(message: types.Message):
             "score": 0
         }
 
-        await send_question(message, user_id)
+        send_question(message.chat.id, user_id)
         return
 
     if user_id not in user_data:
         return
 
     data = user_data[user_id]
+
     quiz_name = data["quiz"]
     index = data["index"]
 
@@ -62,15 +55,16 @@ async def handle_message(message: types.Message):
     data["index"] += 1
 
     if data["index"] >= len(quizzes[quiz_name]):
-        await message.answer(
+        bot.send_message(
+            message.chat.id,
             f"Test tugadi!\n\nNatija: {data['score']} / {len(quizzes[quiz_name])}"
         )
 
         del user_data[user_id]
     else:
-        await send_question(message, user_id)
+        send_question(message.chat.id, user_id)
 
-async def send_question(message, user_id):
+def send_question(chat_id, user_id):
     data = user_data[user_id]
 
     quiz_name = data["quiz"]
@@ -78,24 +72,16 @@ async def send_question(message, user_id):
 
     q = quizzes[quiz_name][index]
 
-    buttons = []
+    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
 
     for option in q["options"]:
-        buttons.append([KeyboardButton(text=option)])
+        keyboard.add(KeyboardButton(option))
 
-    keyboard = ReplyKeyboardMarkup(
-        keyboard=buttons,
-        resize_keyboard=True
-    )
-
-    await message.answer(
+    bot.send_message(
+        chat_id,
         f"{index + 1}-savol\n\n{q['question']}",
         reply_markup=keyboard
     )
 
-async def main():
-    print("Bot ishladi...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+print("Bot ishladi...")
+bot.infinity_polling()
