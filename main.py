@@ -1,87 +1,45 @@
-import telebot
-import json
-from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+import os
+from flask import Flask
+from threading import Thread
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler
 
-TOKEN = "8325777653:AAF01nUdarHlwh33UWMjFtVEBKZdRrqV1Ok"
+# 1. Render uchun kichik server (o'chib qolmaslik uchun)
+app = Flask('')
 
-bot = telebot.TeleBot(TOKEN)
+@app.route('/')
+def home():
+    return "Bot ishlayapti!"
 
-with open("questions.json", "r", encoding="utf-8") as f:
-    quizzes = json.load(f)
+def run_flask():
+    app.run(host='0.0.0.0', port=8080)
 
-user_data = {}
+# 2. Quiz Bot qismi
+TOKEN = os.getenv("TOKEN") # Tokenni Render sozlamalaridan olamiz
 
-@bot.message_handler(commands=['start'])
-def start(message):
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
+async def start(update: Update, context):
+    await update.message.reply_text("Quiz botga xush kelibsiz! /quiz buyrug'ini yuboring.")
 
-    for quiz_name in quizzes.keys():
-        keyboard.add(KeyboardButton(quiz_name))
-
-    bot.send_message(
-        message.chat.id,
-        "Quiz tanlang:",
-        reply_markup=keyboard
+async def quiz(update: Update, context):
+    question = "O'zbekistondagi eng baland tog' cho'qqisi qaysi?"
+    options = ["Hazrati Sulton", "Adelung", "Besh-tor", "Gissar"]
+    
+    await update.message.reply_poll(
+        question=question,
+        options=options,
+        type='quiz',
+        correct_option_id=0, # Hazrati Sulton to'g'ri javob
+        explanation="Hazrati Sulton cho'qqisi 4643 metr balandlikka ega."
     )
 
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    user_id = message.from_user.id
-    text = message.text
-
-    if text in quizzes:
-        user_data[user_id] = {
-            "quiz": text,
-            "index": 0,
-            "score": 0
-        }
-
-        send_question(message.chat.id, user_id)
-        return
-
-    if user_id not in user_data:
-        return
-
-    data = user_data[user_id]
-
-    quiz_name = data["quiz"]
-    index = data["index"]
-
-    current_question = quizzes[quiz_name][index]
-
-    if text == current_question["answer"]:
-        data["score"] += 1
-
-    data["index"] += 1
-
-    if data["index"] >= len(quizzes[quiz_name]):
-        bot.send_message(
-            message.chat.id,
-            f"Test tugadi!\n\nNatija: {data['score']} / {len(quizzes[quiz_name])}"
-        )
-
-        del user_data[user_id]
-    else:
-        send_question(message.chat.id, user_id)
-
-def send_question(chat_id, user_id):
-    data = user_data[user_id]
-
-    quiz_name = data["quiz"]
-    index = data["index"]
-
-    q = quizzes[quiz_name][index]
-
-    keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
-
-    for option in q["options"]:
-        keyboard.add(KeyboardButton(option))
-
-    bot.send_message(
-        chat_id,
-        f"{index + 1}-savol\n\n{q['question']}",
-        reply_markup=keyboard
-    )
-
-print("Bot ishladi...")
-bot.infinity_polling()
+if __name__ == '__main__':
+    # Serverni alohida oqimda ishga tushiramiz
+    Thread(target=run_flask).start()
+    
+    # Botni ishga tushiramiz
+    app_bot = ApplicationBuilder().token(TOKEN).build()
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("quiz", quiz))
+    
+    print("Bot yoqildi...")
+    app_bot.run_polling()
