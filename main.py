@@ -15,42 +15,39 @@ dp = Dispatcher()
 games = {}
 poll_to_chat = {}
 
-# 1. JSON fayldan barcha savollarni yuklash
+# JSON fayldan barcha savollarni yuklash
 ALL_QUESTIONS = []
 try:
     with open("questions.json", "r", encoding="utf-8") as file:
         ALL_QUESTIONS = json.load(file)
     print(f"Muvaffaqiyatli yuklandi: {len(ALL_QUESTIONS)} ta savol.")
 except FileNotFoundError:
-    # Fayl topilmasa test uchun 12 ta savol (sinab ko'rish uchun blok hajmini 5 ta qilamiz pastda)
     ALL_QUESTIONS = [{"question": f"Test savoli {i}", "options": ["Variant A", "Variant B"], "correct": "Variant A"} for i in range(1, 13)]
-    print("questions.json topilmadi, test ma'lumotlari yaratildi.")
+    print("questions.json topilmadi, vaqtincha test ma'lumotlari yaratildi.")
 
-# Har bir blokda nechta savol bo'lishi (Siz aytgandek 50 ta)
+# Har bir blokda nechta savol bo'lishi
 BLOCK_SIZE = 50 
 
 def get_blocks_keyboard(chat_id):
-    """Savollarni BLOCK_SIZE bo'yicha bo'lib, tugmalar generatori"""
     builder = InlineKeyboardBuilder()
     total_questions = len(ALL_QUESTIONS)
     
-    # Bloklar sonini hisoblaymiz
     block_count = (total_questions + BLOCK_SIZE - 1) // BLOCK_SIZE
     
     for i in range(block_count):
         start_num = i * BLOCK_SIZE + 1
         end_num = min((i + 1) * BLOCK_SIZE, total_questions)
-        # Tugma matni: "Blok 1 (1-50)"
         builder.button(text=f"📦 Blok {i+1} ({start_num}-{end_num})", callback_data=f"block:{i}:{chat_id}")
         
-    builder.adjust(2) # Tugmalarni 2 qatordan joylashtirish
+    builder.adjust(2)
     return builder.as_markup()
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer(
         "👋 Salom! Men Blokli Viktorina botman.\n\n"
-        "Savollar 50 tadan bo'laklarga bo'lingan. Testni boshlash uchun /quiz buyrug'ini yuboring."
+        "Bazada 400 dan ortiq falsafa savollari bor va ular 50 tadan bo'laklarga bo'lingan.\n"
+        "Testni boshlash uchun /quiz buyrug'ini yuboring."
     )
 
 @dp.message(Command("quiz"))
@@ -67,14 +64,12 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
     block_idx = int(block_idx)
     chat_id = int(chat_id)
     
-    # Tanlangan blokning savollarini ajratib olamiz
     start_idx = block_idx * BLOCK_SIZE
     end_idx = start_idx + BLOCK_SIZE
     block_questions = ALL_QUESTIONS[start_idx:end_idx]
     
     is_group = callback.message.chat.type in ["group", "supergroup"]
     
-    # Xotirada sessiya ochamiz
     games[chat_id] = {
         "questions": block_questions,
         "current_index": 0,
@@ -84,10 +79,9 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
         "current_poll_id": None,
         "current_msg_id": None,
         "task": None,
-        "block_num": block_idx + 1 # Nechanchi blokligini eslab qolish uchun
+        "block_num": block_idx + 1
     }
     
-    # Taymer tugmalari
     builder = InlineKeyboardBuilder()
     builder.button(text="15 Sekund", callback_data=f"time:15:{chat_id}")
     builder.button(text="30 Sekund", callback_data=f"time:30:{chat_id}")
@@ -108,7 +102,6 @@ async def set_time_and_start(callback: types.CallbackQuery):
     games[chat_id]["time_limit"] = seconds
     await callback.message.delete()
     
-    # Viktorinani boshlash
     await send_next_question(chat_id)
 
 async def send_next_question(chat_id):
@@ -124,26 +117,45 @@ async def send_next_question(chat_id):
         return
         
     q = questions[idx]
+    
+    # Xavfsiz to'g'ri javob indeksini topish (Bo'shliqlarni tozalab solishtiradi)
+    correct_index = 0
+    correct_text = str(q.get("correct", "")).strip().lower()
+    for i, opt in enumerate(q["options"]):
+        if str(opt).strip().lower() == correct_text:
+            correct_index = i
+            break
+
+    # Telegram limitlaridan o'tib ketmaslik uchun variantlarni qisqartirish (max 100 belgi)
+    cleaned_options = []
+    for opt in q["options"]:
+        opt_str = str(opt).strip()
+        if len(opt_str) > 100:
+            cleaned_options.append(opt_str[:97] + "...")
+        else:
+            cleaned_options.append(opt_str)
+
     try:
-        correct_index = q["options"].index(q["correct"])
-    except ValueError:
-        correct_index = 0
+        poll_msg = await bot.send_poll(
+            chat_id=chat_id,
+            question=f"📦 Blok {game['block_num']} | Savol {idx+1}/{len(questions)}:\n{q['question']}"[:300], # Savol limiti 300 belgi
+            options=cleaned_options,
+            type="quiz",
+            correct_option_id=correct_index,
+            is_anonymous=False,
+            explanation="To'g'ri javob belgilandi!"
+        )
         
-    poll_msg = await bot.send_poll(
-        chat_id=chat_id,
-        question=f"📦 Blok {game['block_num']} | Savol {idx+1}/{len(questions)}:\n{q['question']}",
-        options=q["options"],
-        type="quiz",
-        correct_option_id=correct_index,
-        is_anonymous=False,
-        explanation="Noto'g'ri javob!"
-    )
-    
-    game["current_poll_id"] = poll_msg.poll.id
-    game["current_msg_id"] = poll_msg.message_id
-    poll_to_chat[poll_msg.poll.id] = chat_id
-    
-    game["task"] = asyncio.create_task(wait_for_timer(chat_id, game["time_limit"]))
+        game["current_poll_id"] = poll_msg.poll.id
+        game["current_msg_id"] = poll_msg.message_id
+        poll_to_chat[poll_msg.poll.id] = chat_id
+        
+        game["task"] = asyncio.create_task(wait_for_timer(chat_id, game["time_limit"]))
+    except Exception as e:
+        # Agar biror savolda kutilmagan xatolik bo'lsa, bot to'xtab qolmaydi, keyingi savolga o'tib ketadi
+        print(f"Poll yuborishda xatolik (Savol {idx+1}): {e}")
+        game["current_index"] += 1
+        await send_next_question(chat_id)
 
 async def wait_for_timer(chat_id, duration):
     await asyncio.sleep(duration)
@@ -179,7 +191,13 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
     
     idx = game["current_index"]
     q = game["questions"][idx]
-    correct_index = q["options"].index(q["correct"])
+    
+    correct_index = 0
+    correct_text = str(q.get("correct", "")).strip().lower()
+    for i, opt in enumerate(q["options"]):
+        if str(opt).strip().lower() == correct_text:
+            correct_index = i
+            break
     
     if poll_answer.option_ids[0] == correct_index:
         game["results"][user_id]["correct"] += 1
@@ -218,9 +236,8 @@ async def finish_quiz(chat_id):
         del poll_to_chat[game["current_poll_id"]]
     del games[chat_id]
 
-# Render uxlab qolmasligi uchun soxta server
 async def web_handle(request):
-    return web.Response(text="Quiz Bot Paginaton is active...")
+    return web.Response(text="Quiz Bot on Render is ready!")
 
 async def start_web_server():
     app = web.Application()
