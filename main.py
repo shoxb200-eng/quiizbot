@@ -1,7 +1,6 @@
 import os
+import json
 import asyncio
-from io import BytesIO
-from docx import Document
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -12,131 +11,198 @@ TOKEN = os.environ.get("BOT_TOKEN", "8325777653:AAF01nUdarHlwh33UWMjFtVEBKZdRrqV
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Bot xotirasi
-games = {} 
+# Bot xotirasi (Aktiv o'yinlar va foydalanuvchilar holati)
+games = {}
+# poll_id orqali qaysi guruh/chatga tegishliligini bilish uchun:
+poll_to_chat = {}
 
-def parse_docx(file_bytes):
-    """Docx faylini o'qib, savollar ro'yxatini ajratib oladi"""
-    doc = Document(BytesIO(file_bytes))
-    questions = []
-    
-    current_q = None
-    for p in doc.paragraphs:
-        text = p.text.strip()
-        if not text:
-            continue
-            
-        if text.startswith('#'):
-            if current_q:
-                questions.append(current_q)
-            current_q = {"question": text[1:].strip(), "options": [], "correct": None}
-        elif text.startswith('$') and current_q:
-            current_q["options"].append(text[1:].strip())
-        elif text.startswith('*') and current_q:
-            opt = text[1:].strip()
-            current_q["options"].append(opt)
-            current_q["correct"] = opt
-            
-    if current_q:
-        questions.append(current_q)
-    return questions
+# 1. JSON fayldan savollarni yuklash
+# 'questions.json' fayli main.py bilan bitta papkada bo'lishi kerak
+try:
+    with open("questions.json", "r", encoding="utf-8") as file:
+        QUIZ_QUESTIONS = json.load(file)
+    print(f"Muvaffaqiyatli yuklandi: {len(QUIZ_QUESTIONS)} ta savol.")
+except FileNotFoundError:
+    # Agar fayl topilmasa, test uchun vaqtinchalik savollar
+    QUIZ_QUESTIONS = [
+        {"question": "Python qaysi yili yaratilgan?", "options": ["1989", "1991", "1995", "2000"], "correct": "1991"},
+        {"question": "O'zbekiston poytaxti qayer?", "options": ["Samarqand", "Buxoro", "Toshkent"], "correct": "Toshkent"}
+    ]
+    print("questions.json topilmadi, test savollari yuklandi.")
 
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer(
-        "Salom! Men haqiqiy Viktorina (Poll) botman. Menga `.docx` formatidagi test faylini yuboring.\n"
-        "Fayl formati:\n# Savol\n$ Variant\n* To'g'ri javob"
+        "👋 Salom! Men universal Viktorina botman.\n\n"
+        "Testni boshlash uchun /quiz buyrug'ini yuboring.\n"
+        "*(Meni guruhga qo'shib, guruhda ham /quiz buyrug'ini berishingiz mumkin)*"
     )
 
-@dp.message(F.document)
-async def handle_docs(message: types.Message):
-    if not message.document.file_name.endswith('.docx'):
-        return await message.answer("Iltimos, faqat `.docx` (Word) fayl yuboring.")
-        
-    file_info = await bot.get_file(message.document.file_id)
-    file_bytes = await bot.download_file(file_info.file_path)
+@dp.message(Command("quiz"))
+async def start_quiz_session(message: types.Message):
+    chat_id = message.chat.id
+    is_group = message.chat.type in ["group", "supergroup"]
     
-    try:
-        questions = parse_docx(file_bytes.read())
-        if not questions:
-            return await message.answer("Fayldan savollar topilmadi. Formatni tekshiring.")
-            
-        chat_id = message.chat.id
-        games[chat_id] = {
-            "questions": questions,
-            "current_index": 0
-        }
-        
-        # Taymerni tanlash tugmalari
-        builder = InlineKeyboardBuilder()
-        builder.button(text="15 Sekund", callback_data=f"time:15:{chat_id}")
-        builder.button(text="30 Sekund", callback_data=f"time:30:{chat_id}")
-        builder.button(text="1 Daqiqa", callback_data=f"time:60:{chat_id}")
-        builder.adjust(3)
-        
-        await message.answer(f"Fayl qabul qilindi. {len(questions)} ta savol topildi. Taymerni tanlang:", reply_markup=builder.as_markup())
-    except Exception as e:
-        await message.answer(f"Faylni o'qishda xatolik: {e}")
+    # Yangi o'yin sessiyasini ochamiz
+    games[chat_id] = {
+        "questions": QUIZ_QUESTIONS,
+        "current_index": 0,
+        "time_limit": 30, # Standart vaqt, inline tugma orqali o'zgaradi
+        "results": {},    # user_id: {"name": name, "correct": 0, "total": 0}
+        "is_group": is_group,
+        "current_poll_id": None,
+        "current_msg_id": None,
+        "task": None      # Shaxsiy chatda vaqtni buzish (cancel) qilish uchun taymer taski
+    }
+    
+    # Vaqtni tanlash tugmalari
+    builder = InlineKeyboardBuilder()
+    builder.button(text="15 Sekund", callback_data=f"time:15:{chat_id}")
+    builder.button(text="30 Sekund", callback_data=f"time:30:{chat_id}")
+    builder.button(text="1 Daqiqa", callback_data=f"time:60:{chat_id}")
+    builder.adjust(3)
+    
+    await message.answer("⏱ Viktorina uchun savol taymerini tanlang:", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("time:"))
-async def set_time(callback: types.CallbackQuery):
+async def set_time_and_start(callback: types.CallbackQuery):
     _, seconds, chat_id = callback.data.split(":")
     chat_id = int(chat_id)
     seconds = int(seconds)
     
     if chat_id not in games:
-        return await callback.answer("O'yin topilmadi yoki eskirgan.", show_alert=True)
+        return await callback.answer("Sessiya topilmadi. Qaytadan /quiz bering.", show_alert=True)
         
+    games[chat_id]["time_limit"] = seconds
     await callback.message.delete()
-    asyncio.create_task(run_poll_quiz(chat_id, seconds))
+    
+    # Viktorina funksiyasini zudlik bilan chaqiramiz
+    await send_next_question(chat_id)
 
-async def run_poll_quiz(chat_id, time_limit):
+async def send_next_question(chat_id):
     if chat_id not in games:
         return
+        
     game = games[chat_id]
+    idx = game["current_index"]
     questions = game["questions"]
     
-    for idx, q in enumerate(questions):
-        if chat_id not in games:
-            break
-            
-        # To'g'ri javobning indeksini topamiz (Telegramga indeks kerak)
-        try:
-            correct_index = q["options"].index(q["correct"])
-        except ValueError:
-            correct_index = 0  # Agar xatolik bo'lsa, birinchisini belgilaydi
-            
-        # Haqiqiy Telegram Viktorinasini yuborish (send_poll)
-        # explanation - foydalanuvchi noto'g'ri bossa, to'g'ri javob tushuntirishi
-        poll_msg = await bot.send_poll(
-            chat_id=chat_id,
-            question=f"Savol {idx+1}/{len(questions)}:\n{q['question']}",
-            options=q["options"],
-            type="quiz",  # Viktorina rejimi
-            correct_option_id=correct_index,
-            is_anonymous=False,  # Ovoz bergan odamlar ko'rinishi uchun FALSE bo'lishi shart!
-            explanation="Kechirasiz, bu noto'g'ri javob edi!"
-        )
+    # Agar savollar tugagan bo'lsa, natijani chiqaramiz
+    if idx >= len(questions):
+        await finish_quiz(chat_id)
+        return
         
-        # Belgilangan vaqtchalik kutamiz (15, 30 yoki 60 soniya)
-        await asyncio.sleep(time_limit)
+    q = questions[idx]
+    try:
+        correct_index = q["options"].index(q["correct"])
+    except ValueError:
+        correct_index = 0
         
-        # Vaqt tugagach, so'rovnomani yopamiz (Ovoz berish to'xtaydi, lekin foizlar ko'rinib turadi)
-        try:
-            await bot.stop_poll(chat_id, poll_msg.message_id)
-        except Exception as e:
-            print(f"Pollni to'xtatishda xatolik: {e}")
-            
-        # Savollar orasida 2 soniya kichik tanaffus (hammasi ketma-ket yopishib ketmasligi uchun)
-        await asyncio.sleep(2)
+    # Viktorinani (Poll) guruhga yoki shaxsiyga yuborish
+    poll_msg = await bot.send_poll(
+        chat_id=chat_id,
+        question=f"Savol {idx+1}/{len(questions)}:\n{q['question']}",
+        options=q["options"],
+        type="quiz",
+        correct_option_id=correct_index,
+        is_anonymous=False, # Kim javob berganini bilishimiz shart!
+        explanation="Noto'g'ri javob!"
+    )
+    
+    game["current_poll_id"] = poll_msg.poll.id
+    game["current_msg_id"] = poll_msg.message_id
+    poll_to_chat[poll_msg.poll.id] = chat_id
+    
+    # Taymerni ishga tushiramiz (Guruhda ham, shaxsiyda ham vaqt tugashini nazorat qiladi)
+    game["task"] = asyncio.create_task(wait_for_timer(chat_id, game["time_limit"]))
 
-    await bot.send_message(chat_id, "🏁 **Barcha testlar yakunlandi!**")
+async def wait_for_timer(chat_id, duration):
+    await asyncio.sleep(duration)
     if chat_id in games:
-        del games[chat_id]
+        game = games[chat_id]
+        # Guruhda vaqt tugagach so'rovnomani yopamiz va keyingi savolga o'tamiz
+        try:
+            await bot.stop_poll(chat_id, game["current_msg_id"])
+        except:
+            pass
+        
+        await asyncio.sleep(1.5) # Kichik tanaffus
+        game["current_index"] += 1
+        await send_next_question(chat_id)
 
-# Render uchun soxta veb-server
+# 2. Ovoz berish jarayonini ushlash (Foydalanuvchi variant tanlaganda)
+@dp.poll_answer()
+async def handle_poll_answer(poll_answer: types.PollAnswer):
+    poll_id = poll_answer.poll_id
+    if poll_id not in poll_to_chat:
+        return
+        
+    chat_id = poll_to_chat[poll_id]
+    if chat_id not in games:
+        return
+        
+    game = games[chat_id]
+    user_id = poll_answer.user.id
+    user_name = poll_answer.user.full_name
+    
+    # Natijalarni hisoblash bazasini tekshirish
+    if user_id not in game["results"]:
+        game["results"][user_id] = {"name": user_name, "correct": 0, "total": 0}
+        
+    game["results"][user_id]["total"] += 1
+    
+    # Tanlangan variant to'g'ri ekanligini bilish
+    idx = game["current_index"]
+    q = game["questions"][idx]
+    correct_index = q["options"].index(q["correct"])
+    
+    if poll_answer.option_ids[0] == correct_index:
+        game["results"][user_id]["correct"] += 1
+
+    # AGAR SHAXSIY CHAT BO'LSA - Kutmasdan darhol keyingi savolga o'tkazamiz
+    if not game["is_group"]:
+        # Joriy taymerni bekor qilamiz
+        if game["task"]:
+            game["task"].cancel()
+            
+        try:
+            await bot.stop_poll(chat_id, game["current_msg_id"])
+        except:
+            pass
+            
+        game["current_index"] += 1
+        # Keyingi savolni yuborish uchun biroz kutish (animatsiya chiroyli ko'rinishi uchun)
+        await asyncio.sleep(1)
+        await send_next_question(chat_id)
+
+async def finish_quiz(chat_id):
+    if chat_id not in games:
+        return
+        
+    game = games[chat_id]
+    results = game["results"]
+    
+    report = "🏁 **Viktorina yakunlandi! Natijalar:**\n\n"
+    
+    if not results:
+        report += "Hech kim testda qatnashmadi yoki savollarga javob berilmadi."
+    else:
+        # Natijalarni to'g'ri javoblar soni bo'yicha yuqoridan pastga saralaymiz
+        sorted_results = sorted(results.items(), key=lambda x: x[1]["correct"], reverse=True)
+        
+        for i, (u_id, data) in enumerate(sorted_results, 1):
+            report += f"{i}. 👤 {data['name']} ➔ **{data['correct']} ta** to'g'ri ({data['total']} tadan)\n"
+            
+    await bot.send_message(chat_id, report, parse_mode="Markdown")
+    
+    # Xotirani tozalash
+    if game["current_poll_id"] in poll_to_chat:
+        del poll_to_chat[game["current_poll_id"]]
+    del games[chat_id]
+
+# Render uchun majburiy soxta veb-server
 async def web_handle(request):
-    return web.Response(text="Bot muvaffaqiyatli ishlamoqda!")
+    return web.Response(text="Quiz Bot is running...")
 
 async def start_web_server():
     app = web.Application()
@@ -150,7 +216,6 @@ async def start_web_server():
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
     await start_web_server()
-    print("Bot va Soxta Server tayyor...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
