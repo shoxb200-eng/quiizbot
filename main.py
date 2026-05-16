@@ -5,15 +5,14 @@ from docx import Document
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from aiohttp import web  # Render port xatoligini oldini olish uchun
+from aiohttp import web
 
-# Bot tokenini Render muhitidan (Environment) o'qiymiz, topilmasa kodda yozilgani ishlaydi
 TOKEN = os.environ.get("BOT_TOKEN", "8325777653:AAF01nUdarHlwh33UWMjFtVEBKZdRrqV1Ok")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Bot xotirasi (Vaqtinchalik)
+# Bot xotirasi
 games = {} 
 
 def parse_docx(file_bytes):
@@ -42,17 +41,10 @@ def parse_docx(file_bytes):
         questions.append(current_q)
     return questions
 
-def get_quiz_keyboard(options, q_index, time_limit, chat_id):
-    builder = InlineKeyboardBuilder()
-    for i, opt in enumerate(options):
-        builder.button(text=opt, callback_data=f"ans:{q_index}:{i}:{time_limit}:{chat_id}")
-    builder.adjust(1)
-    return builder.as_markup()
-
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer(
-        "Salom! Men Quiz botman. Menga `.docx` formatidagi test faylini yuboring.\n"
+        "Salom! Men haqiqiy Viktorina (Poll) botman. Menga `.docx` formatidagi test faylini yuboring.\n"
         "Fayl formati:\n# Savol\n$ Variant\n* To'g'ri javob"
     )
 
@@ -72,13 +64,10 @@ async def handle_docs(message: types.Message):
         chat_id = message.chat.id
         games[chat_id] = {
             "questions": questions,
-            "current_index": 0,
-            "results": {},  # user_id: {"name": x, "correct": 0, "total": 0}
-            "answered_users": set(),
-            "is_group": message.chat.type in ["group", "supergroup"]
+            "current_index": 0
         }
         
-        # Taymerni tanlash
+        # Taymerni tanlash tugmalari
         builder = InlineKeyboardBuilder()
         builder.button(text="15 Sekund", callback_data=f"time:15:{chat_id}")
         builder.button(text="30 Sekund", callback_data=f"time:30:{chat_id}")
@@ -99,90 +88,53 @@ async def set_time(callback: types.CallbackQuery):
         return await callback.answer("O'yin topilmadi yoki eskirgan.", show_alert=True)
         
     await callback.message.delete()
-    asyncio.create_task(run_quiz(chat_id, seconds))
+    asyncio.create_task(run_poll_quiz(chat_id, seconds))
 
-async def run_quiz(chat_id, time_limit):
+async def run_poll_quiz(chat_id, time_limit):
     if chat_id not in games:
         return
     game = games[chat_id]
     questions = game["questions"]
     
     for idx, q in enumerate(questions):
-        # O'yin davomida o'chirib yuborilmaganini tekshirish
         if chat_id not in games:
             break
-        game["current_index"] = idx
-        game["answered_users"].clear()
-        
-        text = f"❓ **Savol {idx+1}/{len(questions)}**:\n\n{q['question']}\n\n⏱ Vaqt: {time_limit} sekund"
-        msg = await bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=get_quiz_keyboard(q["options"], idx, time_limit, chat_id))
-        
-        await asyncio.sleep(time_limit)
-        try:
-            await bot.delete_message(chat_id, msg.message_id)
-        except:
-            pass
-
-    if chat_id not in games:
-        return
-        
-    # O'yin tugadi, natijalarni chiqarish
-    results = game["results"]
-    if game["is_group"]:
-        report = "🏁 **Test yakunlandi! Guruh natijalari:**\n\n"
-        if not results:
-            report += "Hech kim qatnashmadi."
-        for u_id, data in results.items():
-            report += f"👤 {data['name']} -> {data['correct']} ta to'g'ri, {data['total'] - data['correct']} ta noto'g'ri\n"
-    else:
-        # Shaxsiy chat uchun
-        user_id = list(results.keys())[0] if results else None
-        if user_id:
-            data = results[user_id]
-            report = f"🏁 **Test tugadi! Sizning natijangiz:**\n\nTo'g'ri: {data['correct']} ta\nNoto'g'ri: {data['total'] - data['correct']} ta"
-        else:
-            report = "Test yakunlandi, lekin javoblar qayd etilmadi."
             
-    await bot.send_message(chat_id, report, parse_mode="Markdown")
+        # To'g'ri javobning indeksini topamiz (Telegramga indeks kerak)
+        try:
+            correct_index = q["options"].index(q["correct"])
+        except ValueError:
+            correct_index = 0  # Agar xatolik bo'lsa, birinchisini belgilaydi
+            
+        # Haqiqiy Telegram Viktorinasini yuborish (send_poll)
+        # explanation - foydalanuvchi noto'g'ri bossa, to'g'ri javob tushuntirishi
+        poll_msg = await bot.send_poll(
+            chat_id=chat_id,
+            question=f"Savol {idx+1}/{len(questions)}:\n{q['question']}",
+            options=q["options"],
+            type="quiz",  # Viktorina rejimi
+            correct_option_id=correct_index,
+            is_anonymous=False,  # Ovoz bergan odamlar ko'rinishi uchun FALSE bo'lishi shart!
+            explanation="Kechirasiz, bu noto'g'ri javob edi!"
+        )
+        
+        # Belgilangan vaqtchalik kutamiz (15, 30 yoki 60 soniya)
+        await asyncio.sleep(time_limit)
+        
+        # Vaqt tugagach, so'rovnomani yopamiz (Ovoz berish to'xtaydi, lekin foizlar ko'rinib turadi)
+        try:
+            await bot.stop_poll(chat_id, poll_msg.message_id)
+        except Exception as e:
+            print(f"Pollni to'xtatishda xatolik: {e}")
+            
+        # Savollar orasida 2 soniya kichik tanaffus (hammasi ketma-ket yopishib ketmasligi uchun)
+        await asyncio.sleep(2)
+
+    await bot.send_message(chat_id, "🏁 **Barcha testlar yakunlandi!**")
     if chat_id in games:
         del games[chat_id]
 
-@dp.callback_query(F.data.startswith("ans:"))
-async def handle_answer(callback: types.CallbackQuery):
-    _, q_index, opt_index, time_limit, chat_id = callback.data.split(":")
-    q_index, opt_index, chat_id = int(q_index), int(opt_index), int(chat_id)
-    user_id = callback.from_user.id
-    name = callback.from_user.full_name
-    
-    if chat_id not in games:
-        return await callback.answer("Bu test yakunlangan.", show_alert=True)
-        
-    game = games[chat_id]
-    
-    if game["current_index"] != q_index:
-        return await callback.answer("Bu savolning vaqti tugagan!", show_alert=True)
-        
-    if user_id in game["answered_users"] and game["is_group"]:
-        return await callback.answer("Siz bu savolga javob berib bo'ldingiz!", show_alert=True)
-        
-    game["answered_users"].add(user_id)
-    
-    if user_id not in game["results"]:
-        game["results"][user_id] = {"name": name, "correct": 0, "total": 0}
-        
-    q = game["questions"][q_index]
-    chosen_option = q["options"][opt_index]
-    
-    game["results"][user_id]["total"] += 1
-    is_correct = (chosen_option == q["correct"])
-    
-    if is_correct:
-        game["results"][user_id]["correct"] += 1
-        await callback.answer("To'g'ri javob!", show_alert=False)
-    else:
-        await callback.answer("Noto'g'ri javob!", show_alert=False)
-
-# Render platformasi port so'raganda javob beradigan soxta server funksiyasi
+# Render uchun soxta veb-server
 async def web_handle(request):
     return web.Response(text="Bot muvaffaqiyatli ishlamoqda!")
 
@@ -191,21 +143,14 @@ async def start_web_server():
     app.router.add_get('/', web_handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    # Render avtomatik ravishda taqdim etadigan PORT muhitini olamiz
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
 
 async def main():
-    # 1. Eski faol Webhook'larni tozalash (TelegramConflictError'ni yo'qotadi)
     await bot.delete_webhook(drop_pending_updates=True)
-    
-    # 2. Render talab qiladigan soxta veb-serverni ishga tushirish (Port scan timeout xatoligini yo'qotadi)
     await start_web_server()
-    print("Soxta Veb-server ishga tushdi...")
-    
-    # 3. Polling rejimida botni boshlash
-    print("Bot Polling rejimida ishga tushirildi...")
+    print("Bot va Soxta Server tayyor...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
