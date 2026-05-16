@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import asyncio
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
@@ -45,18 +46,40 @@ def get_blocks_keyboard(chat_id):
 @dp.message(Command("start"))
 async def start_cmd(message: types.Message):
     await message.answer(
-        "👋 Salom! Men Blokli Viktorina botman.\n\n"
-        "Bazada 400 dan ortiq falsafa savollari bor va ular 50 tadan bo'laklarga bo'lingan.\n"
-        "Testni boshlash uchun /quiz buyrug'ini yuboring."
+        "👋 Salom! Men Blokli va Aqlli Viktorina botman.\n\n"
+        "• Testni boshlash: /quiz\n"
+        "• Testni vaqtidan oldin to'xtatish: /stop\n\n"
+        "Savollar 50 tadan bo'lingan va har safar tasodifiy (random) tartibda beriladi!"
     )
 
 @dp.message(Command("quiz"))
 async def choose_block_msg(message: types.Message):
     chat_id = message.chat.id
+    
+    # Agar guruhda allaqachon o'yin ketayotgan bo'lsa, yangisini boshlashga yo'l qo'ymaymiz
+    if chat_id in games:
+        return await message.answer("⚠️ Bu chatda hozirda faol viktorina ketmoqda. Uni to'xtatish uchun /stop buyrug'ini bering.")
+        
     if not ALL_QUESTIONS:
         return await message.answer("Xatolik: Savollar bazasi bo'sh!")
         
     await message.answer("📚 Viktorina blokini tanlang:", reply_markup=get_blocks_keyboard(chat_id))
+
+@dp.message(Command("stop"))
+async def stop_quiz_cmd(message: types.Message):
+    chat_id = message.chat.id
+    
+    if chat_id not in games:
+        return await message.answer("❌ Hozirda hech qanday faol test mavjud emas.")
+        
+    # Guruhda faqat guruh adminlari yoki o'yinni boshlagan odam to'xtata olishi xavfsizligi
+    if message.chat.type in ["group", "supergroup"]:
+        member = await message.chat.get_member(message.from_user.id)
+        if member.status not in ["creator", "administrator"]:
+            return await message.answer("⚠️ Guruhdagi testni faqat adminlar to'xtata oladi!")
+
+    await message.answer("🛑 Viktorina foydalanuvchi buyrug'iga binoan muddatidan oldin to'xtatildi.")
+    await finish_quiz(chat_id, auto_paused=False)
 
 @dp.callback_query(F.data.startswith("block:"))
 async def set_block_and_show_timer(callback: types.CallbackQuery):
@@ -64,14 +87,20 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
     block_idx = int(block_idx)
     chat_id = int(chat_id)
     
+    if chat_id in games:
+        return await callback.answer("Bu chatda o'yin boshlanib ketgan!", show_alert=True)
+        
     start_idx = block_idx * BLOCK_SIZE
     end_idx = start_idx + BLOCK_SIZE
     block_questions = ALL_QUESTIONS[start_idx:end_idx]
     
+    # [YANGILIK] Blok ichidagi 50 ta savolni tasodifiy (random) aralashtiramiz
+    shuffled_questions = random.sample(block_questions, len(block_questions))
+    
     is_group = callback.message.chat.type in ["group", "supergroup"]
     
     games[chat_id] = {
-        "questions": block_questions,
+        "questions": shuffled_questions,
         "current_index": 0,
         "time_limit": 30,
         "results": {},
@@ -79,7 +108,9 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
         "current_poll_id": None,
         "current_msg_id": None,
         "task": None,
-        "block_num": block_idx + 1
+        "block_num": block_idx + 1,
+        "unanswered_counter": 0,  # Ketma-ket javob berilmagan savollar soni
+        "current_poll_answered": False # Joriy savolga kimdir javob berdimi?
     }
     
     builder = InlineKeyboardBuilder()
@@ -88,7 +119,7 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
     builder.button(text="1 Daqiqa", callback_data=f"time:60:{chat_id}")
     builder.adjust(3)
     
-    await callback.message.edit_text(f"✅ {block_idx+1}-Blok tanlandi ({len(block_questions)} ta savol).\n⏱ Taymer vaqtini tanlang:", reply_markup=builder.as_markup())
+    await callback.message.edit_text(f"✅ {block_idx+1}-Blok tanlandi ({len(block_questions)} ta savol aralashtirildi).\n⏱ Taymer vaqtini tanlang:", reply_markup=builder.as_markup())
 
 @dp.callback_query(F.data.startswith("time:"))
 async def set_time_and_start(callback: types.CallbackQuery):
@@ -117,8 +148,8 @@ async def send_next_question(chat_id):
         return
         
     q = questions[idx]
+    game["current_poll_answered"] = False # Yangi savol uchun yangidan hisoblaymiz
     
-    # Xavfsiz to'g'ri javob indeksini topish (Bo'shliqlarni tozalab solishtiradi)
     correct_index = 0
     correct_text = str(q.get("correct", "")).strip().lower()
     for i, opt in enumerate(q["options"]):
@@ -126,7 +157,6 @@ async def send_next_question(chat_id):
             correct_index = i
             break
 
-    # Telegram limitlaridan o'tib ketmaslik uchun variantlarni qisqartirish (max 100 belgi)
     cleaned_options = []
     for opt in q["options"]:
         opt_str = str(opt).strip()
@@ -138,7 +168,7 @@ async def send_next_question(chat_id):
     try:
         poll_msg = await bot.send_poll(
             chat_id=chat_id,
-            question=f"📦 Blok {game['block_num']} | Savol {idx+1}/{len(questions)}:\n{q['question']}"[:300], # Savol limiti 300 belgi
+            question=f"🎲 Blok {game['block_num']} | Savol {idx+1}/{len(questions)}:\n{q['question']}"[:300],
             options=cleaned_options,
             type="quiz",
             correct_option_id=correct_index,
@@ -152,7 +182,6 @@ async def send_next_question(chat_id):
         
         game["task"] = asyncio.create_task(wait_for_timer(chat_id, game["time_limit"]))
     except Exception as e:
-        # Agar biror savolda kutilmagan xatolik bo'lsa, bot to'xtab qolmaydi, keyingi savolga o'tib ketadi
         print(f"Poll yuborishda xatolik (Savol {idx+1}): {e}")
         game["current_index"] += 1
         await send_next_question(chat_id)
@@ -165,6 +194,18 @@ async def wait_for_timer(chat_id, duration):
             await bot.stop_poll(chat_id, game["current_msg_id"])
         except:
             pass
+        
+        # [YANGILIK] Agar taymer tugaguncha hech kim ovoz bermagan bo'lsa counter oshadi
+        if not game["current_poll_answered"]:
+            game["unanswered_counter"] += 1
+        else:
+            game["unanswered_counter"] = 0 # Kimdir javob bersa hisoblagich nolga qaytadi
+
+        # Agar ketma-ket 3 ta savol tashlab ketilgan bo'lsa test avtomatik pauza bo'ladi
+        if game["unanswered_counter"] >= 3:
+            await bot.send_message(chat_id, "💤 Ketma-ket 3 ta savolga hech kim javob bermadi. Viktorina faollik yo'qligi sababli to'xtatildi (pauza).")
+            await finish_quiz(chat_id, auto_paused=True)
+            return
         
         await asyncio.sleep(1.5)
         game["current_index"] += 1
@@ -181,6 +222,8 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
         return
         
     game = games[chat_id]
+    game["current_poll_answered"] = True # Ovoz berilganini qayd etamiz
+    
     user_id = poll_answer.user.id
     user_name = poll_answer.user.full_name
     
@@ -214,17 +257,27 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
         await asyncio.sleep(1)
         await send_next_question(chat_id)
 
-async def finish_quiz(chat_id):
+async def finish_quiz(chat_id, auto_paused=False):
     if chat_id not in games:
         return
         
     game = games[chat_id]
     results = game["results"]
     
-    report = f"🏁 **{game['block_num']}-Blok yakunlandi! Natijalar:**\n\n"
+    # Agar taymer kutish jarayoni bo'lsa uni bekor qilamiz (Stop buyrug'i berilganda xatolik bo'lmasligi uchun)
+    if game["task"]:
+        game["task"].cancel()
+        
+    try:
+        await bot.stop_poll(chat_id, game["current_msg_id"])
+    except:
+        pass
+        
+    status_text = "pauza holatidagi" if auto_paused else "yakuniy"
+    report = f"🏁 **{game['block_num']}-Blok bo'yicha {status_text} natijalar:**\n\n"
     
     if not results:
-        report += "Hech kim qatnashmadi."
+        report += "Hech kim qatnashmadi yoki savollarga to'g'ri javob berilmadi."
     else:
         sorted_results = sorted(results.items(), key=lambda x: x[1]["correct"], reverse=True)
         for i, (u_id, data) in enumerate(sorted_results, 1):
@@ -237,7 +290,7 @@ async def finish_quiz(chat_id):
     del games[chat_id]
 
 async def web_handle(request):
-    return web.Response(text="Quiz Bot on Render is ready!")
+    return web.Response(text="Quiz Bot Smart features active!")
 
 async def start_web_server():
     app = web.Application()
