@@ -1,0 +1,12 @@
+[
+  {
+    "question": "O'zbekiston poytaxti qayer?",
+    "options": ["Samarqand", "Buxoro", "Toshkent", "Xiva"],
+    "correct": "Toshkent"
+  },
+  {
+    "question": "Inson tanasidagi eng katta organ qaysi?",
+    "options": ["Jigar", "Yurak", "Teri", "O'pka"],
+    "correct": "Teri"
+  }
+]
