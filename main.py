@@ -5,14 +5,15 @@ from docx import Document
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiohttp import web  # Render port xatoligini oldini olish uchun
 
-TOKEN = "8325777653:AAF01nUdarHlwh33UWMjFtVEBKZdRrqV1Ok"  # Bot tokeningizni shu yerga yozing
+# Bot tokenini Render muhitidan (Environment) o'qiymiz, topilmasa kodda yozilgani ishlaydi
+TOKEN = os.environ.get("BOT_TOKEN", "8325777653:AAF01nUdarHlwh33UWMjFtVEBKZdRrqV1Ok")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Bot xotirasi (Ma'lumotlar bazasi o'rniga vaqtinchalik)
-# Ishlab chiqarishda buni Redis yoki PostgreSQL qilish tavsiya etiladi
+# Bot xotirasi (Vaqtinchalik)
 games = {} 
 
 def parse_docx(file_bytes):
@@ -101,10 +102,15 @@ async def set_time(callback: types.CallbackQuery):
     asyncio.create_task(run_quiz(chat_id, seconds))
 
 async def run_quiz(chat_id, time_limit):
+    if chat_id not in games:
+        return
     game = games[chat_id]
     questions = game["questions"]
     
     for idx, q in enumerate(questions):
+        # O'yin davomida o'chirib yuborilmaganini tekshirish
+        if chat_id not in games:
+            break
         game["current_index"] = idx
         game["answered_users"].clear()
         
@@ -117,6 +123,9 @@ async def run_quiz(chat_id, time_limit):
         except:
             pass
 
+    if chat_id not in games:
+        return
+        
     # O'yin tugadi, natijalarni chiqarish
     results = game["results"]
     if game["is_group"]:
@@ -135,7 +144,8 @@ async def run_quiz(chat_id, time_limit):
             report = "Test yakunlandi, lekin javoblar qayd etilmadi."
             
     await bot.send_message(chat_id, report, parse_mode="Markdown")
-    del games[chat_id]
+    if chat_id in games:
+        del games[chat_id]
 
 @dp.callback_query(F.data.startswith("ans:"))
 async def handle_answer(callback: types.CallbackQuery):
@@ -172,12 +182,30 @@ async def handle_answer(callback: types.CallbackQuery):
     else:
         await callback.answer("Noto'g'ri javob!", show_alert=False)
 
-    # Shaxsiy chatda javob berganda darhol keyingi savolga o'tish (taymerni kutmaslik uchun)
-    if not game["is_group"]:
-        # Bu sodda versiyada shaxsiy chatda ham taymer tugashini kutadi, guruhda esa hamma kutadi.
-        pass
+# Render platformasi port so'raganda javob beradigan soxta server funksiyasi
+async def web_handle(request):
+    return web.Response(text="Bot muvaffaqiyatli ishlamoqda!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', web_handle)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    # Render avtomatik ravishda taqdim etadigan PORT muhitini olamiz
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
 
 async def main():
+    # 1. Eski faol Webhook'larni tozalash (TelegramConflictError'ni yo'qotadi)
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # 2. Render talab qiladigan soxta veb-serverni ishga tushirish (Port scan timeout xatoligini yo'qotadi)
+    await start_web_server()
+    print("Soxta Veb-server ishga tushdi...")
+    
+    # 3. Polling rejimida botni boshlash
+    print("Bot Polling rejimida ishga tushirildi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
