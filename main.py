@@ -32,7 +32,6 @@ BLOCK_SIZE = 50
 def get_blocks_keyboard(chat_id):
     builder = InlineKeyboardBuilder()
     total_questions = len(ALL_QUESTIONS)
-    
     block_count = (total_questions + BLOCK_SIZE - 1) // BLOCK_SIZE
     
     for i in range(block_count):
@@ -55,24 +54,18 @@ async def start_cmd(message: types.Message):
 @dp.message(Command("quiz"))
 async def choose_block_msg(message: types.Message):
     chat_id = message.chat.id
-    
-    # Agar guruhda allaqachon o'yin ketayotgan bo'lsa, yangisini boshlashga yo'l qo'ymaymiz
     if chat_id in games:
         return await message.answer("⚠️ Bu chatda hozirda faol viktorina ketmoqda. Uni to'xtatish uchun /stop buyrug'ini bering.")
-        
     if not ALL_QUESTIONS:
         return await message.answer("Xatolik: Savollar bazasi bo'sh!")
-        
     await message.answer("📚 Viktorina blokini tanlang:", reply_markup=get_blocks_keyboard(chat_id))
 
 @dp.message(Command("stop"))
 async def stop_quiz_cmd(message: types.Message):
     chat_id = message.chat.id
-    
     if chat_id not in games:
         return await message.answer("❌ Hozirda hech qanday faol test mavjud emas.")
         
-    # Guruhda faqat guruh adminlari yoki o'yinni boshlagan odam to'xtata olishi xavfsizligi
     if message.chat.type in ["group", "supergroup"]:
         member = await message.chat.get_member(message.from_user.id)
         if member.status not in ["creator", "administrator"]:
@@ -94,9 +87,7 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
     end_idx = start_idx + BLOCK_SIZE
     block_questions = ALL_QUESTIONS[start_idx:end_idx]
     
-    # [YANGILIK] Blok ichidagi 50 ta savolni tasodifiy (random) aralashtiramiz
     shuffled_questions = random.sample(block_questions, len(block_questions))
-    
     is_group = callback.message.chat.type in ["group", "supergroup"]
     
     games[chat_id] = {
@@ -109,8 +100,8 @@ async def set_block_and_show_timer(callback: types.CallbackQuery):
         "current_msg_id": None,
         "task": None,
         "block_num": block_idx + 1,
-        "unanswered_counter": 0,  # Ketma-ket javob berilmagan savollar soni
-        "current_poll_answered": False # Joriy savolga kimdir javob berdimi?
+        "unanswered_counter": 0,
+        "current_poll_answered": False
     }
     
     builder = InlineKeyboardBuilder()
@@ -132,7 +123,6 @@ async def set_time_and_start(callback: types.CallbackQuery):
         
     games[chat_id]["time_limit"] = seconds
     await callback.message.delete()
-    
     await send_next_question(chat_id)
 
 async def send_next_question(chat_id):
@@ -148,7 +138,7 @@ async def send_next_question(chat_id):
         return
         
     q = questions[idx]
-    game["current_poll_answered"] = False # Yangi savol uchun yangidan hisoblaymiz
+    game["current_poll_answered"] = False
     
     correct_index = 0
     correct_text = str(q.get("correct", "")).strip().lower()
@@ -195,13 +185,11 @@ async def wait_for_timer(chat_id, duration):
         except:
             pass
         
-        # [YANGILIK] Agar taymer tugaguncha hech kim ovoz bermagan bo'lsa counter oshadi
         if not game["current_poll_answered"]:
             game["unanswered_counter"] += 1
         else:
-            game["unanswered_counter"] = 0 # Kimdir javob bersa hisoblagich nolga qaytadi
+            game["unanswered_counter"] = 0
 
-        # Agar ketma-ket 3 ta savol tashlab ketilgan bo'lsa test avtomatik pauza bo'ladi
         if game["unanswered_counter"] >= 3:
             await bot.send_message(chat_id, "💤 Ketma-ket 3 ta savolga hech kim javob bermadi. Viktorina faollik yo'qligi sababli to'xtatildi (pauza).")
             await finish_quiz(chat_id, auto_paused=True)
@@ -222,7 +210,7 @@ async def handle_poll_answer(poll_answer: types.PollAnswer):
         return
         
     game = games[chat_id]
-    game["current_poll_answered"] = True # Ovoz berilganini qayd etamiz
+    game["current_poll_answered"] = True
     
     user_id = poll_answer.user.id
     user_name = poll_answer.user.full_name
@@ -264,7 +252,6 @@ async def finish_quiz(chat_id, auto_paused=False):
     game = games[chat_id]
     results = game["results"]
     
-    # Agar taymer kutish jarayoni bo'lsa uni bekor qilamiz (Stop buyrug'i berilganda xatolik bo'lmasligi uchun)
     if game["task"]:
         game["task"].cancel()
         
@@ -289,17 +276,23 @@ async def finish_quiz(chat_id, auto_paused=False):
         del poll_to_chat[game["current_poll_id"]]
     del games[chat_id]
 
+# --- RENDER UCHUN VEB-SERVER QISMI ---
 async def web_handle(request):
-    return web.Response(text="Quiz Bot Smart features active!")
+    return web.Response(text="Quiz Bot is active and awake!", status=200)
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get('/', web_handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    
+    # [TUZATISH] Render muhitidagi asosiy portni olish (agar bo'lmasa 10000)
+    port = int(os.environ.get("PORT", 10000))
+    
+    # Barcha IP lardan kelayotgan so'rovlarni eshitish uchun 0.0.0.0 qo'yamiz
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
+    print(f"Veb server {port}-portda muvaffaqiyatli ishga tushdi.")
 
 async def main():
     await bot.delete_webhook(drop_pending_updates=True)
